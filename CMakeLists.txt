@@ -4,6 +4,8 @@ cmake_minimum_required(VERSION 3.15)
 # Project
 project(20F_EE324_Assign4)
 
+set (CMAKE_CXX_STANDARD 11)
+
 # Protobuf
 set(protobuf_MODULE_COMPATIBLE TRUE)
 find_package(Protobuf CONFIG REQUIRED)
