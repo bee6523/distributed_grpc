@@ -332,6 +332,7 @@ void RunServer(std::string port) {
 void* grpc_worker(void* argp){
   std::string port = *(std::string *)argp;
   RunServer(port);
+  return NULL;
 }
 
 //connect_server: open connection to recieve client
