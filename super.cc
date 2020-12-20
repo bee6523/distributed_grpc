@@ -35,6 +35,7 @@
 #include <sys/ioctl.h>
 #include <net/if.h>
 
+
 #include <grpcpp/grpcpp.h>
 #include <grpcpp/health_check_service_interface.h>
 #include <grpcpp/ext/proto_server_reflection_plugin.h>
@@ -51,6 +52,8 @@ using grpc::StatusCode;
 using grpc::ResourceQuota;
 using grpc::Channel;
 using grpc::ClientContext;
+using grpc::CompletionQueue;
+using grpc::ClientAsyncResponseReader;
 using assign4::Request;
 using assign4::Response;
 using assign4::ChunkRequest;
@@ -64,9 +67,13 @@ using assign4::Supernode;
 
 class SupernodeClient {
  public:
-  SupernodeClient(){}
+  SupernodeClient(){
+    cq_ = new CompletionQueue;
+  }
   SupernodeClient(std::shared_ptr<Channel> channel)
-      : stub_(Supernode::NewStub(channel)) {}
+      : stub_(Supernode::NewStub(channel)) {
+        cq_ = new CompletionQueue;
+      }
 
   static SupernodeClient* instance(){
     static SupernodeClient supernode_cli;
@@ -113,16 +120,56 @@ class SupernodeClient {
         return false;
       }
   }
+  void TranslateChunk(const std::string& chunk){
+    ChunkRequest request;
+    request.set_chunk(chunk);
 
+    AsyncClientCall* call = new AsyncClientCall;
+    // Context for the client. It could be used to convey extra information to
+    // the server and/or tweak certain RPC behaviors.
+    call->response_reader = stub_->AsyncTranslateChunk(&call->context, request, cq_);
+    call->response_reader->Finish(&call->reply, &call->status, (void*)call);
+    std::cout << "rpc send to supernode" << std::endl;
+  }
+  std::string CompleteTranslateChunk(){
+    void* got_tag;
+    bool ok = false;
+    std::cout << "rpc recieved from supernode" << cq_ << std::endl;
+    GPR_ASSERT(cq_->Next(&got_tag, &ok));
+    AsyncClientCall* call = static_cast<AsyncClientCall*>(got_tag);
+    GPR_ASSERT(ok);
+    if (call->status.ok()) {
+      return call->reply.chunk();
+    } else {
+      std::cout << call->status.error_code() << ": " << call->status.error_message()
+                << std::endl;
+      return "RPC failed";
+    }
+  }
  private:
+  struct AsyncClientCall {
+    // Container for the data we expect from the server.
+    ChunkResponse reply;
+    // Context for the client. It could be used to convey extra information to
+    // the server and/or tweak certain RPC behaviors.
+    ClientContext context;
+    // Storage for the status of the RPC upon completion.
+    Status status;
+    std::unique_ptr<ClientAsyncResponseReader<ChunkResponse>> response_reader;
+  };
   std::unique_ptr<Supernode::Stub> stub_;
+  CompletionQueue* cq_;
 };
 
 class ChildnodeClient {
  public:
-  ChildnodeClient():stub_(nullptr){}
+  ChildnodeClient():stub_(){
+    cq_=new CompletionQueue();
+  }
   ChildnodeClient(std::shared_ptr<Channel> channel)
-      : stub_(Childnode::NewStub(channel)) {}
+      : stub_(Childnode::NewStub(channel)) {
+        cq_=new CompletionQueue();
+      }
 
   std::string HandleMiss(const std::string& keyword){
     Request request;
@@ -140,33 +187,50 @@ class ChildnodeClient {
   }
   // Assembles the client's payload, sends it and presents the response back
   // from the server.
-  std::string TranslateChunk(const std::string& user) {
+  void TranslateChunk(const std::string& user) {
     // Data we are sending to the server.
     ChunkRequest request;
     request.set_chunk(user);
 
-    // Container for the data we expect from the server.
-    ChunkResponse reply;
-
+    AsyncClientCall* call = new AsyncClientCall;
     // Context for the client. It could be used to convey extra information to
     // the server and/or tweak certain RPC behaviors.
-    ClientContext context;
-
+    call->response_reader = stub_->AsyncTranslateChunk(&call->context, request, cq_);
+    call->response_reader->Finish(&call->reply, &call->status, (void*)call);
+    std::cout << "rpc send to child node" << std::endl;
     // The actual RPC.
-    Status status = stub_->TranslateChunk(&context, request, &reply);
-
+    //Status status = stub_->TranslateChunk(&context, request, &reply);
     // Act upon its status.
-    if (status.ok()) {
-      return reply.chunk();
+  }
+  std::string CompleteTranslateChunk(){
+    void* got_tag;
+    bool ok = false;
+    std::cout << "rpc recieved from child node" << cq_ << std::endl;
+    GPR_ASSERT(cq_->Next(&got_tag, &ok));
+    AsyncClientCall* call = static_cast<AsyncClientCall*>(got_tag);
+    GPR_ASSERT(ok);
+    if (call->status.ok()) {
+      return call->reply.chunk();
     } else {
-      std::cout << status.error_code() << ": " << status.error_message()
+      std::cout << call->status.error_code() << ": " << call->status.error_message()
                 << std::endl;
       return "RPC failed";
     }
   }
 
  private:
+  struct AsyncClientCall {
+    // Container for the data we expect from the server.
+    ChunkResponse reply;
+    // Context for the client. It could be used to convey extra information to
+    // the server and/or tweak certain RPC behaviors.
+    ClientContext context;
+    // Storage for the status of the RPC upon completion.
+    Status status;
+    std::unique_ptr<ClientAsyncResponseReader<ChunkResponse>> response_reader;
+  };
   std::unique_ptr<Childnode::Stub> stub_;
+  CompletionQueue* cq_;
 };
 
 class ChildNodeManager{
@@ -210,7 +274,28 @@ class SupernodeServiceImpl final : public Supernode::Service {
   }
   Status TranslateChunk(ServerContext* context, const ChunkRequest* request,
                   ChunkResponse* reply) override{
-    //TODO
+    std::vector<ChildnodeClient>* vec=ChildNodeManager::instance();
+    std::vector<ChildnodeClient>::iterator it;
+    std::cout << "recieved rpc" << std::endl;
+    int num_child = vec->size();
+    std::string message = request->chunk();
+    int msglen = message.length();
+    int len_per_child = msglen/num_child+1;
+    int start=0;
+    int index=-1;
+    for(it=vec->begin(); it != vec->end(); it++){
+      do{
+        index++;
+      }while(index-start < len_per_child || isalnum(message[index]) );
+      it->TranslateChunk(message.substr(start,index));
+      start=index;
+    }
+    std::string ret;
+    for(it=vec->begin(); it != vec->end(); it++){
+      ret+=it->CompleteTranslateChunk();
+    }
+    reply->set_chunk(ret);
+    return Status::OK;
   }
 };
 
@@ -303,7 +388,7 @@ int main(int argc, char** argv) {
         *SupernodeClient::instance() = SupernodeClient(grpc::CreateChannel(
                argv[i], grpc::InsecureChannelCredentials()));
       }else{
-        std::vector<ChildnodeClient> *vec(ChildNodeManager::instance());
+        std::vector<ChildnodeClient>* vec(ChildNodeManager::instance());
         vec->push_back(ChildnodeClient(grpc::CreateChannel(
                argv[i], grpc::InsecureChannelCredentials())));
       }
@@ -340,11 +425,11 @@ int main(int argc, char** argv) {
         exit(1);
       }
       std::cout << "supernode connection success" <<std::endl;
-
-
+    std::cout <<"try transfer" << std::endl;
+    SupernodeClient::instance()->TranslateChunk("BiQ MfsfV 0Y08mD meOHyG!!");
+    std::string res = SupernodeClient::instance()->CompleteTranslateChunk();
+    std::cout << res << std::endl;
   }
-  std::string res = (ChildNodeManager::instance())->at(0).TranslateChunk("0 1 2 3! 0 1 2...? 2, 1, 0!!");
-  std::cout << res << std::endl;
 
   // //opening socket server
   // int sockfd = connect_server(clientport.c_str());

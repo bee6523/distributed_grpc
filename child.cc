@@ -151,6 +151,7 @@ class ChildnodeServiceImpl final : public Childnode::Service{
       do{
         index++;
         if(index==chunk.size()){
+          std::cout << "translate complete: " << chunk << std::endl;
           reply->set_chunk(chunk);
           return Status::OK;
         }
@@ -182,6 +183,7 @@ class ChildnodeServiceImpl final : public Childnode::Service{
       // memory address of this instance as the uniquely identifying tag for
       // the event.
       if(index==chunk.size()){
+        std::cout << "translate complete: " << chunk << std::endl;
         reply->set_chunk(chunk);
         return Status::OK;
       }
