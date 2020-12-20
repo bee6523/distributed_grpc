@@ -43,6 +43,7 @@
 #include "cmake/build/assign4.grpc.pb.h"
 
 #define BACKLOG 10
+#define PACKET_SIZE 1000
 
 using grpc::Server;
 using grpc::ServerBuilder;
@@ -85,6 +86,7 @@ class SupernodeClient {
     // Data we are sending to the server.
     Request request;
     request.set_req(user);
+    request.set_from_super(true);
 
     // Container for the data we expect from the server.
     Response reply;
@@ -264,7 +266,9 @@ class SupernodeServiceImpl final : public Supernode::Service {
         return Status::OK;
       }
     }
-    value = SupernodeClient::instance()->HandleMiss(keyword);
+    if(!request->from_super()){
+      value = SupernodeClient::instance()->HandleMiss(keyword);
+    }
     if(value.at(0) != '\0'){
       reply->set_res(value);
       return Status::OK;
@@ -287,7 +291,7 @@ class SupernodeServiceImpl final : public Supernode::Service {
       do{
         index++;
       }while(index-start < len_per_child || isalnum(message[index]) );
-      it->TranslateChunk(message.substr(start,index));
+      it->TranslateChunk(message.substr(start,index-start));
       start=index;
     }
     std::string ret;
@@ -371,6 +375,13 @@ int connect_server(const char *port){
     return sockfd;
 }
 
+struct hdr{
+    uint8_t version;
+    uint8_t userID;
+    uint16_t seq;
+    uint16_t length;
+    uint16_t cmd;
+};
 
 int main(int argc, char** argv) {
   bool is_secondnode=false;
@@ -425,33 +436,161 @@ int main(int argc, char** argv) {
         exit(1);
       }
       std::cout << "supernode connection success" <<std::endl;
-    std::cout <<"try transfer" << std::endl;
-    SupernodeClient::instance()->TranslateChunk("BiQ MfsfV 0Y08mD meOHyG!!");
-    std::string res = SupernodeClient::instance()->CompleteTranslateChunk();
-    std::cout << res << std::endl;
   }
 
-  // //opening socket server
-  // int sockfd = connect_server(clientport.c_str());
-  // if(listen(sockfd, BACKLOG)==-1){
-  //     perror("listen");
-  //     exit(1);
-  // }
-  // struct sockaddr_storage their_addr;
-  // socklen_t sin_size = sizeof(their_addr);
-  // int newfd;
+  //opening socket server
+  int sockfd = connect_server(clientport.c_str());
+  if(listen(sockfd, BACKLOG)==-1){
+      perror("listen");
+      exit(1);
+  }
+  struct sockaddr_storage their_addr;
+  socklen_t sin_size = sizeof(their_addr);
+  int newfd;
 
-  // while(true){
-  //   newfd=accept(sockfd, (struct sockaddr *)&their_addr, &sin_size);
-  //   if(newfd==-1){
-  //       perror("accept");
-  //       exit(1);
-  //   }
-  //   std::cout << "client connected" << std::endl;
-  // }
+  while(true){
+    newfd=accept(sockfd, (struct sockaddr *)&their_addr, &sin_size);
+    if(newfd==-1){
+        perror("accept");
+        exit(1);
+    }
+    std::cout << "client connected" << std::endl;
+    char *filebuf;
+    struct hdr *rcv_hdr=(struct hdr *)malloc(sizeof(struct hdr));
+    struct hdr *snd_hdr;
+    std::string message;
+    int filesize;
+    int numbytes;
+
+    //get filesize from client    
+    numbytes=recv(newfd,rcv_hdr,8,0);
+    GPR_ASSERT(ntohs(rcv_hdr->cmd)==0x0002);
+    filebuf = (char *)malloc(ntohs(rcv_hdr->length)-8);
+    if(recv(newfd,filebuf,ntohs(rcv_hdr->length)-8,0)<0){
+        fprintf(stderr, "recieving content failed\n");
+        return -1;
+    }
+    filesize = atoi(filebuf);
+    std::cout << "filesize: " << filebuf << std::endl;
+    free(filebuf);
+
+    //retrieve half of information that should be passed into other supernode
+    while((numbytes=recv(newfd,rcv_hdr,8,0))!=0){
+      if(numbytes==-1)
+          perror("recv error");
+      filebuf = (char *)malloc(ntohs(rcv_hdr->length)-8);
+      if(recv(newfd,filebuf,ntohs(rcv_hdr->length)-8,0)<0){
+          fprintf(stderr, "recieving content failed\n");
+          return -1;
+      }
+      message += filebuf;
+      std::cout << filebuf << std::endl;
+      free(filebuf);
+      if(message.length() > filesize/2){
+        std::cout << "packet for supernode collected" << std::endl;
+        int index = filesize/2;
+        while(isalnum(message[index])){
+          index--;
+        }
+        SupernodeClient::instance()->TranslateChunk(message.substr(0,index));
+        filesize-=index;
+        message = message.substr(index);
+        break;
+      }
+    }
+    std::cout << "message left:" << message << std::endl;
+
+    //get the rest of informations
+    while((numbytes=recv(newfd,rcv_hdr,8,0))!=0){
+      if(numbytes==-1)
+          perror("recv error");
+      filebuf = (char *)malloc(ntohs(rcv_hdr->length)-8);
+      if(recv(newfd,filebuf,ntohs(rcv_hdr->length)-8,0)<0){
+          fprintf(stderr, "recieving content failed\n");
+          return -1;
+      }
+      message += filebuf;
+      free(filebuf);
+      if(ntohs(rcv_hdr->cmd) == 0x0004){
+        break;
+      }
+    }
+    std::vector<ChildnodeClient>* vec=ChildNodeManager::instance();
+    std::vector<ChildnodeClient>::iterator it;
+    std::cout << "string for child node collected. send it to childs" << std::endl;
+    int num_child = vec->size();
+    int msglen = message.length();
+    int len_per_child = msglen/num_child+1;
+    int start=0;
+    int index=-1;
+    for(it=vec->begin(); it != vec->end(); it++){
+      do{
+        index++;
+      }while(index-start < len_per_child || isalnum(message[index]) );
+      it->TranslateChunk(message.substr(start,index-start));
+      start=index;
+    }
+
+    //send supernode result
+    std::string ret = SupernodeClient::instance()->CompleteTranslateChunk();
+    filesize = ret.length();
+    index=0;
+    while(filesize){
+        int p_size = (filesize>(PACKET_SIZE-8))?(PACKET_SIZE-8):filesize;
+        filesize -= p_size;
+        snd_hdr = (struct hdr *) malloc(sizeof(struct hdr)+p_size);
+        snd_hdr->version=0x04;
+        snd_hdr->userID=0x08;
+        snd_hdr->seq=0;
+        snd_hdr->length=htons(p_size+8);
+        snd_hdr->cmd=htons(0x0003);
+        filebuf = ((char *)snd_hdr)+8;
+        strcpy(filebuf,ret.substr(index,p_size).c_str());
+        if(send(newfd, (void *)snd_hdr,p_size+8,0)<0){
+            perror("sending file failed\n");
+        }
+        index+=p_size;
+        free(snd_hdr);
+    }
+    //send childnode results
+    ret = "";
+    for(it=vec->begin(); it != vec->end(); it++){
+      ret+=it->CompleteTranslateChunk();
+    }
+    filesize = ret.length();
+    index=0;
+    while(filesize){
+        int p_size = (filesize>(PACKET_SIZE-8))?(PACKET_SIZE-8):filesize;
+        filesize -= p_size;
+        snd_hdr = (struct hdr *) malloc(sizeof(struct hdr)+p_size);
+        snd_hdr->version=0x04;
+        snd_hdr->userID=0x08;
+        snd_hdr->seq=0;
+        snd_hdr->length=htons(p_size+8);
+        snd_hdr->cmd=htons(0x0003);
+        filebuf = ((char *)snd_hdr)+8;
+        strcpy(filebuf,ret.substr(index,p_size).c_str());
+        if(send(newfd, (void *)snd_hdr,p_size+8,0)<0){
+            perror("sending file failed\n");
+        }
+        index+=p_size;
+        free(snd_hdr);
+    }
+    //send completion message
+    snd_hdr=(struct hdr *)malloc(sizeof(struct hdr));
+    snd_hdr->version=0x04;
+    snd_hdr->userID=0x08;
+    snd_hdr->seq=0;
+    snd_hdr->length=htons(8);
+    snd_hdr->cmd=htons(0x0004);
+    if(send(newfd, (void *)snd_hdr, 8,0)<0){
+        perror("sending filename failed\n");
+    }
+    free(snd_hdr);
+    close(newfd);
+  }
 
 
-terminate:
   pthread_join(tid, NULL);
   return 0;
 }

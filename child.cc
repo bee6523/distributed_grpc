@@ -103,6 +103,7 @@ class SupernodeClient {
     // Data we are sending to the server.
     Request request;
     request.set_req(user);
+    request.set_from_super(false);
 
     // Container for the data we expect from the server.
     Response reply;

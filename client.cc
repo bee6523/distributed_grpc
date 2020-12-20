@@ -90,10 +90,27 @@ int main(int argc, char * const argv[]){
 
     //sending data to server
     unsigned int file_size = 0;
+    char filechar[100]="0";
     char *file_content;
     fseek(snd_file,0,SEEK_END);
     file_size=ftell(snd_file);
     fseek(snd_file,0,SEEK_SET);
+    //file size(0x0004) sending
+    sprintf(filechar,"%d",file_size);
+    snd_hdr=(struct hdr *)malloc(sizeof(struct hdr)+strlen(filechar)+1);
+    seq++;
+    snd_hdr->version=0x04;
+    snd_hdr->userID=0x08;
+    snd_hdr->seq=htons(seq);
+    snd_hdr->length=htons(strlen(filechar)+9);
+    snd_hdr->cmd=htons(0x0002);
+    file_content=((char *)snd_hdr)+8;
+    strcpy(file_content,filechar);
+    if(send(sockfd, (void *)snd_hdr, strlen(filechar)+9,0)<0){
+        perror("sending filename failed\n");
+    }
+    free(snd_hdr);
+
     while(file_size){
         int p_size = (file_size>(PACKET_SIZE-8))?(PACKET_SIZE-8):file_size;
         file_size -= p_size;
@@ -129,6 +146,44 @@ int main(int argc, char * const argv[]){
         perror("sending filename failed\n");
     }
     free(snd_hdr);
+
+    FILE *tf;
+    if((tf=fopen("result.txt","w+"))==NULL){
+        fprintf(stderr,"creating result file failed\n");
+        return -1;
+    }
+    int numbytes;
+    char *filebuf;
+    rcv_hdr=(struct hdr *)buf;
+    while((numbytes=recv(sockfd,buf,8,0))!=0){
+        if(numbytes==-1)
+            perror("recv error");
+        switch(ntohs(rcv_hdr->cmd)){
+            case 0x0003:
+                filebuf = (char *)malloc(ntohs(rcv_hdr->length)-8);
+                if(recv(sockfd,filebuf,ntohs(rcv_hdr->length)-8,0)<0){
+                    fprintf(stderr, "recieving content failed\n");
+                    return -1;
+                }
+                fwrite(filebuf,ntohs(rcv_hdr->length)-8,1,tf);
+                free(filebuf);
+                break;
+            case 0x0004:
+                fclose(tf);
+                close(sockfd);
+                exit(0);
+                break;
+            case 0x0005:
+                fprintf(stdout, "error recieved from client. session end\n");
+                return -1;
+            default:
+                fprintf(stderr, "something went wrong. info: %d\n", ntohs(rcv_hdr->cmd));
+                return -1;
+        }
+    }
+
+
+
     close(sockfd);
     return 0;
 }
