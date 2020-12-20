@@ -34,6 +34,7 @@ using grpc::ServerCompletionQueue;
 using grpc::Status;
 using grpc::Channel;
 using grpc::ClientContext;
+using grpc::ResourceQuota;
 using assign4::Request;
 using assign4::Response;
 using assign4::ChunkRequest;
@@ -128,163 +129,89 @@ class SupernodeClient {
 };
 
 
-class ServerImpl final {
+class ChildnodeServiceImpl final : public Childnode::Service{
  public:
-  ~ServerImpl() {
-    server_->Shutdown();
-    // Always shutdown the completion queue after the server.
-    cq_->Shutdown();
+  Status HandleMiss(ServerContext* context, const Request* request,
+                  Response* reply) override{
+    std::cout << "miss handler arrived" << std::endl;
+    std::string keyword(request->req());
+    std::string value = DatabaseClient::instance()->AccessDb(keyword);
+    reply->set_res(value);
+    return Status::OK;
   }
+  Status TranslateChunk(ServerContext* context, const ChunkRequest* request,
+                  ChunkResponse* reply) override{
+    std::cout<<"recieved request"<<std::endl;
+    std::string chunk(request->chunk());
+    int index = -1;
+    std::cout<<"chunk: "<<chunk<<std::endl;
 
-  // There is no shutdown handling in this code.
-  void Run(std::string& target) {
-    std::string server_address("0.0.0.0:"+target);
-
-    ServerBuilder builder;
-    // Listen on the given address without any authentication mechanism.
-    builder.AddListeningPort(server_address, grpc::InsecureServerCredentials());
-    // Register "service_" as the instance through which we'll communicate with
-    // clients. In this case it corresponds to an *asynchronous* service.
-    builder.RegisterService(&service_);
-    // Get hold of the completion queue used for the asynchronous communication
-    // with the gRPC runtime.
-    cq_ = builder.AddCompletionQueue();
-    // Finally assemble the server.
-    server_ = builder.BuildAndStart();
-    std::cout << "Server listening on " << server_address << std::endl;
-
-    // Proceed to the server's main loop.
-    HandleRpcs();
-  }
-
- private:
-  // Class encompasing the state and logic needed to serve a request.
-  class CallData {
-   public:
-    // Take in the "service" instance (in this case representing an asynchronous
-    // server) and the completion queue "cq" used for asynchronous communication
-    // with the gRPC runtime.
-    CallData(Childnode::AsyncService* service, ServerCompletionQueue* cq)
-        : service_(service), cq_(cq), responder_(&ctx_), status_(CREATE) {
-      // Invoke the serving logic right away.
-      Proceed();
-    }
-
-    void Proceed() {
-      if (status_ == CREATE) {
-        // Make this instance progress to the PROCESS state.
-        status_ = PROCESS;
-
-        // As part of the initial CREATE state, we *request* that the system
-        // start processing SayHello requests. In this request, "this" acts are
-        // the tag uniquely identifying the request (so that different CallData
-        // instances can serve different requests concurrently), in this case
-        // the memory address of this CallData instance.
-        service_->RequestTranslateChunk(&ctx_, &request_, &responder_, cq_, cq_,
-                                  this);
-      }else if(status_ == START){
-        // Spawn a new CallData instance to serve new clients while we process
-        // the one for this CallData. The instance will deallocate itself as
-        // part of its FINISH state.
-        new CallData(service_, cq_);
-        chunk = request_.chunk();
-        index = 0;
-        status_ = PROCESS;
-      } else if (status_ == PROCESS) {
-        
-        // The actual processing.
-        //slice one keyword
-        do{
-          index++;
-          if(index==chunk.size()){
-            status_ = FINISH;
-            responder_.Finish(reply_, Status::OK, this);
-          }
-        }while(!isalnum(chunk[index]));
-        int start = index;
-
-        do{
-          index++;
-        }while(index<chunk.size() && isalnum(chunk[index]));
-        int len=index-start;
-
-        std::string keyword(chunk.substr(start,len));
-
-        //TODO:: cache search
-
-        std::string value = DatabaseClient::instance()->AccessDb(keyword);
-        if(value == "\0"){
-          value = SupernodeClient::instance()->HandleMiss(keyword);
-        }
-
-        //TODO:: cache add
-
-        chunk.replace(start,len,value);
-
-        // And we are done! Let the gRPC runtime know we've finished, using the
-        // memory address of this instance as the uniquely identifying tag for
-        // the event.
+    std::cout<<"start processing"<<std::endl;
+    while(true){
+      do{
+        index++;
         if(index==chunk.size()){
-          status_ = FINISH;
-          reply_.set_chunk(chunk);
-          responder_.Finish(reply_, Status::OK, this);
+          reply->set_chunk(chunk);
+          return Status::OK;
         }
-      } else {
-        GPR_ASSERT(status_ == FINISH);
-        // Once in the FINISH state, deallocate ourselves (CallData).
-        delete this;
+      }while(!isalnum(chunk[index]));
+      int start = index;
+
+      do{
+        index++;
+      }while(index<chunk.size() && isalnum(chunk[index]));
+      int len=index-start;
+
+      std::string keyword(chunk.substr(start,len));
+
+      //TODO:: cache search
+
+      std::string value = DatabaseClient::instance()->AccessDb(keyword);
+      if(value.at(0)=='\0'){
+        std::cout<<"miss happened" <<std::endl;
+        value = SupernodeClient::instance()->HandleMiss(keyword);
+      }
+      std::cout<<"found "<<value<< value.length() << std::endl;
+
+      //TODO:: cache add
+
+      chunk.replace(start,len,value);
+      index += value.length() - len -1;
+
+      // And we are done! Let the gRPC runtime know we've finished, using the
+      // memory address of this instance as the uniquely identifying tag for
+      // the event.
+      if(index==chunk.size()){
+        reply->set_chunk(chunk);
+        return Status::OK;
       }
     }
-
-   private:
-    // The means of communication with the gRPC runtime for an asynchronous
-    // server.
-    Childnode::AsyncService* service_;
-    // The producer-consumer queue where for asynchronous server notifications.
-    ServerCompletionQueue* cq_;
-    // Context for the rpc, allowing to tweak aspects of it such as the use
-    // of compression, authentication, as well as to send metadata back to the
-    // client.
-    ServerContext ctx_;
-
-    // What we get from the client.
-    ChunkRequest request_;
-    // What we send back to the client.
-    std::string chunk;
-    int index;
-    ChunkResponse reply_;
-
-    // The means to get back to the client.
-    ServerAsyncResponseWriter<ChunkResponse> responder_;
-
-    // Let's implement a tiny state machine with the following states.
-    enum CallStatus { CREATE, START, PROCESS, FINISH };
-
-    CallStatus status_;  // The current serving state.
-  };
-
-  // This can be run in multiple threads if needed.
-  void HandleRpcs() {
-    // Spawn a new CallData instance to serve new clients.
-    new CallData(&service_, cq_.get());
-    void* tag;  // uniquely identifies a request.
-    bool ok;
-    while (true) {
-      // Block waiting to read the next event from the completion queue. The
-      // event is uniquely identified by its tag, which in this case is the
-      // memory address of a CallData instance.
-      // The return value of Next should always be checked. This return value
-      // tells us whether there is any kind of event or cq_ is shutting down.
-      GPR_ASSERT(cq_->Next(&tag, &ok));
-      GPR_ASSERT(ok);
-      static_cast<CallData*>(tag)->Proceed();
-    }
   }
-
-  std::unique_ptr<ServerCompletionQueue> cq_;
-  Childnode::AsyncService service_;
-  std::unique_ptr<Server> server_;
 };
+// There is no shutdown handling in this code.
+void RunServer(std::string& port) {
+  std::string server_address("0.0.0.0:"+port);
+  ChildnodeServiceImpl service;
+
+  grpc::EnableDefaultHealthCheckService(true);
+  //grpc::reflection::InitProtoReflectionServerBuilderPlugin();
+  ServerBuilder builder;
+  ResourceQuota quota;
+  quota.SetMaxThreads(8);    //set maximum number of threads grpc server use
+  // Listen on the given address without any authentication mechanism.
+  builder.AddListeningPort(server_address, grpc::InsecureServerCredentials());
+  builder.SetResourceQuota(quota);
+  // Register "service" as the instance through which we'll communicate with
+  // clients. In this case it corresponds to an *synchronous* service.
+  builder.RegisterService(&service);
+  // Finally assemble the server.
+  std::unique_ptr<Server> server(builder.BuildAndStart());
+  std::cout << "Server listening on " << server_address << std::endl;
+
+  // Wait for the server to shutdown. Note that some other thread must be
+  // responsible for shutting down the server for this call to ever return.
+  server->Wait();
+}
 
 
 int main(int argc, char** argv) {
@@ -305,8 +232,7 @@ int main(int argc, char** argv) {
   *SupernodeClient::instance() = SupernodeClient(grpc::CreateChannel(
       supernode, grpc::InsecureChannelCredentials()));
 
-  ServerImpl server;
-  server.Run(port);
+  RunServer(port);
 
   return 0;
 }

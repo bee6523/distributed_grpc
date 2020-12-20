@@ -8,6 +8,7 @@ service Database {
 
 service Childnode {
     rpc TranslateChunk (ChunkRequest) returns (ChunkResponse) {}
+    rpc HandleMiss (Request) returns (Response) {}
 }
 
 service Supernode {

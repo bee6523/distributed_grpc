@@ -25,11 +25,15 @@
 #include <unistd.h>
 #include <string.h>
  
+#include <stdlib.h>
+#include <sys/types.h>
 #include <sys/socket.h>
-#include <sys/ioctl.h>
-#include <netinet/in.h>
-#include <net/if.h>
+#include <netdb.h>
 #include <arpa/inet.h>
+#include <netinet/in.h>
+#include <errno.h>
+#include <sys/ioctl.h>
+#include <net/if.h>
 
 #include <grpcpp/grpcpp.h>
 #include <grpcpp/health_check_service_interface.h>
@@ -37,10 +41,13 @@
 
 #include "cmake/build/assign4.grpc.pb.h"
 
+#define BACKLOG 10
+
 using grpc::Server;
 using grpc::ServerBuilder;
 using grpc::ServerContext;
 using grpc::Status;
+using grpc::StatusCode;
 using grpc::ResourceQuota;
 using grpc::Channel;
 using grpc::ClientContext;
@@ -113,41 +120,63 @@ class SupernodeClient {
 
 class ChildnodeClient {
  public:
-  ChildnodeClient(){}
+  ChildnodeClient():stub_(nullptr){}
   ChildnodeClient(std::shared_ptr<Channel> channel)
       : stub_(Childnode::NewStub(channel)) {}
 
+  std::string HandleMiss(const std::string& keyword){
+    Request request;
+    request.set_req(keyword);
+    Response reply;
+    ClientContext context;
+    Status status=stub_->HandleMiss(&context,request,&reply);
+    if (status.ok()) {
+      return reply.res();
+    } else {
+      std::cout << status.error_code() << ": " << status.error_message()
+                << std::endl;
+      return "RPC failed";
+    }
+  }
   // Assembles the client's payload, sends it and presents the response back
   // from the server.
   std::string TranslateChunk(const std::string& user) {
     // Data we are sending to the server.
-    Request request;
-    request.set_req(user);
+    ChunkRequest request;
+    request.set_chunk(user);
 
-    // // Container for the data we expect from the server.
-    // Response reply;
+    // Container for the data we expect from the server.
+    ChunkResponse reply;
 
-    // // Context for the client. It could be used to convey extra information to
-    // // the server and/or tweak certain RPC behaviors.
-    // ClientContext context;
+    // Context for the client. It could be used to convey extra information to
+    // the server and/or tweak certain RPC behaviors.
+    ClientContext context;
 
-    // // The actual RPC.
-    // Status status = stub_->HandleMiss(&context, request, &reply);
+    // The actual RPC.
+    Status status = stub_->TranslateChunk(&context, request, &reply);
 
-    // // Act upon its status.
-    // if (status.ok()) {
-    //   return reply.res();
-    // } else {
-    //   std::cout << status.error_code() << ": " << status.error_message()
-    //             << std::endl;
-    //   return "RPC failed";
-    // }
+    // Act upon its status.
+    if (status.ok()) {
+      return reply.chunk();
+    } else {
+      std::cout << status.error_code() << ": " << status.error_message()
+                << std::endl;
+      return "RPC failed";
+    }
   }
 
  private:
   std::unique_ptr<Childnode::Stub> stub_;
 };
 
+class ChildNodeManager{
+  public:
+  ChildNodeManager(){}
+  static std::vector<ChildnodeClient>* instance(){
+    static std::vector<ChildnodeClient> inst;
+    return &inst;
+  }
+};
 
 // Logic and data behind the server's behavior.
 class SupernodeServiceImpl final : public Supernode::Service {
@@ -160,7 +189,23 @@ class SupernodeServiceImpl final : public Supernode::Service {
   }
   Status HandleMiss(ServerContext* context, const Request* request,
                   Response* reply) override{
-    //TODO
+    std::vector<ChildnodeClient>* vec=ChildNodeManager::instance();
+    std::string keyword(request->req());
+    std::string value;
+    std::cout << "handle keyword " << keyword << std::endl;
+    for(std::vector<ChildnodeClient>::iterator it=vec->begin(); it != vec->end(); it++){
+      value = it->HandleMiss(keyword);
+      if(value.at(0) != '\0'){
+        reply->set_res(value);
+        return Status::OK;
+      }
+    }
+    value = SupernodeClient::instance()->HandleMiss(keyword);
+    if(value.at(0) != '\0'){
+      reply->set_res(value);
+      return Status::OK;
+    }
+    return Status(StatusCode::NOT_FOUND,"other child nodes also failed to find it");
 
   }
   Status TranslateChunk(ServerContext* context, const ChunkRequest* request,
@@ -176,8 +221,11 @@ void RunServer(std::string port) {
   grpc::EnableDefaultHealthCheckService(true);
   //grpc::reflection::InitProtoReflectionServerBuilderPlugin();
   ServerBuilder builder;
+  ResourceQuota quota;
+  quota.SetMaxThreads(8);    //set maximum number of threads grpc server use
   // Listen on the given address without any authentication mechanism.
   builder.AddListeningPort(server_address, grpc::InsecureServerCredentials());
+  builder.SetResourceQuota(quota);
   // Register "service" as the instance through which we'll communicate with
   // clients. In this case it corresponds to an *synchronous* service.
   builder.RegisterService(&service);
@@ -191,26 +239,62 @@ void RunServer(std::string port) {
 }
 
 
-class ChildNodeManager{
-  public:
-  ChildNodeManager(){}
-  static std::vector<ChildnodeClient>* instance(){
-    static std::vector<ChildnodeClient> inst;
-    return &inst;
-  }
-};
 
 void* grpc_worker(void* argp){
   std::string port = *(std::string *)argp;
   RunServer(port);
 }
 
+//connect_server: open connection to recieve client
+int connect_server(const char *port){
+    struct addrinfo hints;
+    struct addrinfo *res, *p;
+    int status, sockfd;
+    int yes=1;
+
+    memset(&hints,0,sizeof(hints));//initializing addrinfo
+    hints.ai_family=AF_INET;
+    hints.ai_socktype=SOCK_STREAM;
+    hints.ai_flags=AI_PASSIVE;	
+    
+    if((status=getaddrinfo(NULL,port,&hints,&res))!=0){//getaddrinfo
+        fprintf(stderr, "getaddrinfo: %s\n",gai_strerror(status));
+        return -1;
+    }
+    for(p=res;p!=NULL;p=p->ai_next){//opens listening socket
+        if((sockfd = socket(p->ai_family, p->ai_socktype, p->ai_protocol))==-1){
+            perror("server: socket");
+            continue;
+        }
+        if(setsockopt(sockfd, SOL_SOCKET, SO_REUSEADDR, &yes, sizeof(int))==-1){
+            perror("setsockopt");
+            continue;
+        }
+        if(bind(sockfd, p->ai_addr, p->ai_addrlen)==-1){
+            close(sockfd);
+            perror("server: connect");
+            continue;
+    	}
+        break;
+    }    
+        freeaddrinfo(res);
+
+    if(p==NULL){
+        fprintf(stderr, "client: failed to connect\n");
+        return -1;
+    }
+    return sockfd;
+}
+
+
 int main(int argc, char** argv) {
   bool is_secondnode=false;
   std::string port;
+  std::string clientport;
   if(argc>2){
-    port=argv[1];
-    for(int i=2; i<argc;i++){
+    clientport=argv[1];
+    port=argv[2];
+    for(int i=3; i<argc;i++){
       std::cout << argv[i] << std::endl;
       if(strcmp(argv[i],"-s")==0){
         std::cout << "thisissecondnode" << std::endl;
@@ -225,7 +309,7 @@ int main(int argc, char** argv) {
       }
     }
   }else{
-    std::cout << "usage: ./super 12345 [gRPC port] [child1's ip_address]:[child1’s port] [child2’s ip_address]:[child2’s port] [child3’s ip_address]:[child3’s port] ..."
+    std::cout << "usage: ./super [port for client] [gRPC port] [child1's ip_address]:[child1’s port] [child2’s ip_address]:[child2’s port] [child3’s ip_address]:[child3’s port] ..."
             << std::endl;
     return 0;
   }
@@ -243,7 +327,7 @@ int main(int argc, char** argv) {
   struct ifreq ifr;
   fd = socket(AF_INET, SOCK_DGRAM, 0);
   ifr.ifr_addr.sa_family = AF_INET;
-  memcpy(ifr.ifr_name, "eth0", IFNAMSIZ-1);
+  memcpy(ifr.ifr_name, "enp0s31f6", IFNAMSIZ-1);    //set interface name
   ioctl(fd, SIOCGIFADDR, &ifr);
   close(fd);
   /*Extract IP Address*/
@@ -253,10 +337,34 @@ int main(int argc, char** argv) {
   if(is_secondnode){
       if(!SupernodeClient::instance()->SendInfo(super_ip+":"+port)){
         std::cout << "supernode connection failed" << std::endl;
-        goto terminate;
+        exit(1);
       }
+      std::cout << "supernode connection success" <<std::endl;
+
+
   }
-  std::cout << "supernode connection success" <<std::endl;
+  std::string res = (ChildNodeManager::instance())->at(0).TranslateChunk("0 1 2 3! 0 1 2...? 2, 1, 0!!");
+  std::cout << res << std::endl;
+
+  // //opening socket server
+  // int sockfd = connect_server(clientport.c_str());
+  // if(listen(sockfd, BACKLOG)==-1){
+  //     perror("listen");
+  //     exit(1);
+  // }
+  // struct sockaddr_storage their_addr;
+  // socklen_t sin_size = sizeof(their_addr);
+  // int newfd;
+
+  // while(true){
+  //   newfd=accept(sockfd, (struct sockaddr *)&their_addr, &sin_size);
+  //   if(newfd==-1){
+  //       perror("accept");
+  //       exit(1);
+  //   }
+  //   std::cout << "client connected" << std::endl;
+  // }
+
 
 terminate:
   pthread_join(tid, NULL);

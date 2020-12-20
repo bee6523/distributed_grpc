@@ -40,7 +40,7 @@ class Database(assign4_pb2_grpc.DatabaseServicer):
 def serve():
     server = grpc.server(futures.ThreadPoolExecutor(max_workers=10))
     assign4_pb2_grpc.add_DatabaseServicer_to_server(Database(), server)
-    server.add_insecure_port('[::]:50060')
+    server.add_insecure_port('[::]:96523')
     server.start()
     server.wait_for_termination()
 
