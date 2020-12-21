@@ -503,6 +503,7 @@ int main(int argc, char** argv) {
     struct hdr *rcv_hdr=(struct hdr *)malloc(sizeof(struct hdr));
     struct hdr *snd_hdr;
     std::string message;
+    std::string tmp;
     int filesize;
     int numbytes;
 
@@ -536,9 +537,11 @@ int main(int argc, char** argv) {
         while(isalnum(message[index])){
           index--;
         }
-        SupernodeClient::instance()->TranslateChunk(message.substr(0,index));
+        tmp = message.substr(index);
+        message.resize(index);
+        SupernodeClient::instance()->TranslateChunk(message);
         filesize-=index;
-        message = message.substr(index);
+        message = tmp;
         break;
       }
     }
@@ -562,6 +565,7 @@ int main(int argc, char** argv) {
         free(filebuf);
       }
     }
+    free(rcv_hdr);
     //send rest of information to child nodes
     std::vector<ChildnodeClient>* vec=ChildNodeManager::instance();
     std::vector<ChildnodeClient>::iterator it;
@@ -582,25 +586,27 @@ int main(int argc, char** argv) {
       it->TranslateChunk(message.substr(start,index-start));
       start=index;
     }
-
+    message = "";
     //send supernode result
     std::cout << "send supernode result" << std::endl;
     std::string ret = SupernodeClient::instance()->CompleteTranslateChunk();
     filesize = ret.length();
     index=0;
-    snd_hdr = (struct hdr *) malloc(PACKET_SIZE);
-    filebuf = ((char *)snd_hdr)+8;
+    snd_hdr = (struct hdr *) malloc(sizeof(struct hdr));
     while(filesize){
         int p_size = (filesize>(PACKET_SIZE-8))?(PACKET_SIZE-8):filesize;
-        memset(snd_hdr,0,PACKET_SIZE);
+        memset(snd_hdr,0,8);
         filesize -= p_size;
         snd_hdr->version=0x04;
         snd_hdr->userID=0x08;
         snd_hdr->seq=0;
         snd_hdr->length=htons(p_size+8);
         snd_hdr->cmd=htons(0x0003);
-        strcpy(filebuf,ret.substr(index,p_size).c_str());
-        if(send(newfd, (void *)snd_hdr,p_size+8,0)<0){
+        // strcpy(filebuf,ret.substr(index,p_size).c_str());
+        if(send(newfd, (void *)snd_hdr,8,0)<0){
+            perror("sending file failed\n");
+        }
+        if(send(newfd, (void *)ret.substr(index,p_size).c_str(),p_size,0)<0){
             perror("sending file failed\n");
         }
         index+=p_size;
@@ -617,18 +623,22 @@ int main(int argc, char** argv) {
     while(filesize){
         int p_size = (filesize>(PACKET_SIZE-8))?(PACKET_SIZE-8):filesize;
         filesize -= p_size;
-        memset(snd_hdr,0,PACKET_SIZE);
+        memset(snd_hdr,0,8);
         snd_hdr->version=0x04;
         snd_hdr->userID=0x08;
         snd_hdr->seq=0;
         snd_hdr->length=htons(p_size+8);
         snd_hdr->cmd=htons(0x0003);
-        strcpy(filebuf,ret.substr(index,p_size).c_str());
-        if(send(newfd, (void *)snd_hdr,p_size+8,0)<0){
+        // strcpy(filebuf,ret.substr(index,p_size).c_str());
+        if(send(newfd, (void *)snd_hdr,8,0)<0){
+            perror("sending file failed\n");
+        }
+        if(send(newfd, (void *)ret.substr(index,p_size).c_str(),p_size,0)<0){
             perror("sending file failed\n");
         }
         index+=p_size;
     }
+    std::cout << "send completion message" << std::endl;
     //send completion message
     memset(snd_hdr,0,sizeof(struct hdr));
     snd_hdr->version=0x04;

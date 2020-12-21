@@ -27,7 +27,6 @@ popd
 stub files(assign4.grpc.pb.cc, assign4.grpc.pb.h, etc.) should be generated in cmake/build directory to properly included in source files.
 binary files are also created in cmake/build directory(probably not necessary).
 after process, result.txt should be created at main directory.
-currently it suffers in handling large file. working towards it.
 
 # Misc
 Describe here whatever help (if any) you received from others while doing the assignment.
