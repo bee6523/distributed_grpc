@@ -266,7 +266,7 @@ void RunServer(std::string& port) {
   //grpc::reflection::InitProtoReflectionServerBuilderPlugin();
   ServerBuilder builder;
   ResourceQuota quota;
-  quota.SetMaxThreads(8);    //set maximum number of threads grpc server use
+  quota.SetMaxThreads(16);    //set maximum number of threads grpc server use
   // Listen on the given address without any authentication mechanism.
   builder.AddListeningPort(server_address, grpc::InsecureServerCredentials());
   builder.SetResourceQuota(quota);
