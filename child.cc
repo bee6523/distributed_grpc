@@ -23,6 +23,7 @@
 
 #include <grpcpp/grpcpp.h>
 #include <grpc/support/log.h>
+#include <grpc/support/sync.h>
 
 #include "cmake/build/assign4.grpc.pb.h"
 
@@ -43,7 +44,7 @@ using assign4::Database;
 using assign4::Childnode;
 using assign4::Supernode;
 
-
+#define CACHE_SIZE 10240
 
 class DatabaseClient {
  public:
@@ -121,7 +122,7 @@ class SupernodeClient {
     } else {
       std::cout << status.error_code() << ": " << status.error_message()
                 << std::endl;
-      return "RPC failed";
+      return "[RPC failed]";
     }
   }
 
@@ -130,13 +131,43 @@ class SupernodeClient {
 };
 
 
+
 class ChildnodeServiceImpl final : public Childnode::Service{
  public:
   Status HandleMiss(ServerContext* context, const Request* request,
                   Response* reply) override{
     std::cout << "miss handler arrived" << std::endl;
     std::string keyword(request->req());
-    std::string value = DatabaseClient::instance()->AccessDb(keyword);
+    std::string value;
+
+    gpr_mu_lock(&cache_lock);
+    bool cache_hit=false;;
+    for(std::vector<struct node>::iterator it = cache.begin(); it != cache.end(); it++){
+      if( it->keyword == keyword){
+        std::cout << "cache hit!" << std::endl;
+        cache_hit = true;
+        value=it->value;
+        cache.erase(it);
+        cache.push_back({keyword,value});
+
+        break;
+      }
+    }
+    gpr_mu_unlock(&cache_lock);
+    if(!cache_hit){
+      value = DatabaseClient::instance()->AccessDb(keyword);
+      if(value.at(0) != '\0'){
+        gpr_mu_lock(&cache_lock);
+        while((keyword.length()+value.length()+cache_size) > CACHE_SIZE){ //replacement: LRU
+          std::vector<struct node>::iterator n = cache.begin();
+          cache_size -= n->keyword.length() + n->value.length();
+          cache.erase(n);
+        }
+        std::cout << "cache miss, add to cache!" << std::endl;
+        cache.push_back({keyword,value});
+        gpr_mu_unlock(&cache_lock);
+      }
+    }
     reply->set_res(value);
     return Status::OK;
   }
@@ -165,18 +196,41 @@ class ChildnodeServiceImpl final : public Childnode::Service{
       int len=index-start;
 
       std::string keyword(chunk.substr(start,len));
+      std::string value;
+      bool cache_hit = false;
+      gpr_mu_lock(&cache_lock);
+      for(std::vector<struct node>::iterator it = cache.begin(); it != cache.end(); it++){
+        if( it->keyword == keyword){
+          std::cout << "cache hit!" << std::endl;
+          cache_hit = true;
+          value=it->value;
+          cache.erase(it);
+          cache.push_back({keyword,value});
 
-      //TODO:: cache search
-
-      std::string value = DatabaseClient::instance()->AccessDb(keyword);
-      if(value.at(0)=='\0'){
-        std::cout<<"miss happened" <<std::endl;
-        value = SupernodeClient::instance()->HandleMiss(keyword);
+          break;
+        }
       }
-      std::cout<<"found "<<value<< value.length() << std::endl;
+      gpr_mu_unlock(&cache_lock);
+      if(!cache_hit){
+        value = DatabaseClient::instance()->AccessDb(keyword);
+        if(value.at(0)=='\0'){
+          std::cout<<"miss happened" <<std::endl;
+          value = SupernodeClient::instance()->HandleMiss(keyword);
+        }
+        std::cout<<"found "<<value<< value.length() << std::endl;
 
-      //TODO:: cache add
-
+        if(value.at(0) != '\0'){
+          gpr_mu_lock(&cache_lock);
+          while((keyword.length()+value.length()+cache_size) > CACHE_SIZE){ //replacement: LRU
+            std::vector<struct node>::iterator n = cache.begin();
+            cache_size -= n->keyword.length() + n->value.length();
+            cache.erase(n);
+          }
+          std::cout << "cache miss, add to cache!" << std::endl;
+          cache.push_back({keyword,value});
+          gpr_mu_unlock(&cache_lock);
+        }
+      }
       chunk.replace(start,len,value);
       index += value.length() - len -1;
 
@@ -190,11 +244,23 @@ class ChildnodeServiceImpl final : public Childnode::Service{
       }
     }
   }
+  void InitCacheLock(){
+    gpr_mu_init(&cache_lock);
+  }
+  private:
+    struct node{
+      std::string keyword;
+      std::string value;
+    };
+    std::vector<struct node> cache;
+    gpr_mu cache_lock;
+    int cache_size=0;
 };
 // There is no shutdown handling in this code.
 void RunServer(std::string& port) {
   std::string server_address("0.0.0.0:"+port);
   ChildnodeServiceImpl service;
+  service.InitCacheLock();
 
   grpc::EnableDefaultHealthCheckService(true);
   //grpc::reflection::InitProtoReflectionServerBuilderPlugin();

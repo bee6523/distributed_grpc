@@ -18,11 +18,11 @@ service Supernode {
 }
 
 message ChunkRequest{
-    string chunk=1;
+    bytes chunk=1;
 }
 
 message ChunkResponse{
-    string chunk=1;
+    bytes chunk=1;
 }
 
 message Info{

@@ -44,6 +44,7 @@
 
 #define BACKLOG 10
 #define PACKET_SIZE 1000
+#define CACHE_SIZE 30720
 
 using grpc::Server;
 using grpc::ServerBuilder;
@@ -244,6 +245,7 @@ class ChildNodeManager{
 
 // Logic and data behind the server's behavior.
 class SupernodeServiceImpl final : public Supernode::Service {
+  public:
   Status SendInfo(ServerContext* context, const Info* request,
                   Confirm* reply) override {
     std::string info = request->ip();
@@ -258,16 +260,43 @@ class SupernodeServiceImpl final : public Supernode::Service {
     std::vector<ChildnodeClient>* vec=ChildNodeManager::instance();
     std::string keyword(request->req());
     std::string value;
-    std::cout << "handle keyword " << keyword << std::endl;
-    for(std::vector<ChildnodeClient>::iterator it=vec->begin(); it != vec->end(); it++){
-      value = it->HandleMiss(keyword);
-      if(value.at(0) != '\0'){
-        reply->set_res(value);
-        return Status::OK;
+//    std::cout << "handle keyword " << keyword << std::endl;
+    gpr_mu_lock(&cache_lock);
+    bool cache_hit=false;;
+    for(std::vector<struct node>::iterator it = cache.begin(); it != cache.end(); it++){
+      if( it->keyword == keyword){
+        std::cout << "cache hit!" << std::endl;
+        cache_hit = true;
+        value=it->value;
+        cache.erase(it);
+        cache.push_back({keyword,value});
+
+        break;
       }
     }
-    if(!request->from_super()){
-      value = SupernodeClient::instance()->HandleMiss(keyword);
+    gpr_mu_unlock(&cache_lock);
+    if(!cache_hit){
+      for(std::vector<ChildnodeClient>::iterator it=vec->begin(); it != vec->end(); it++){
+        value = it->HandleMiss(keyword);
+        if(value.at(0) != '\0'){
+          break;
+        }
+      }
+      if(value.at(0) == '\0' && !request->from_super()){
+        value = SupernodeClient::instance()->HandleMiss(keyword);
+      }
+      if(value.at(0) != '\0'){
+        gpr_mu_lock(&cache_lock);
+        while((keyword.length()+value.length()+cache_size) > CACHE_SIZE){ //replacement: LRU
+          std::vector<struct node>::iterator n = cache.begin();
+          cache_size -= n->keyword.length() + n->value.length();
+          cache.erase(n);
+        }
+        std::cout << "cache miss, add to cache!" << std::endl;
+        cache.push_back({keyword,value});
+        gpr_mu_unlock(&cache_lock);
+      }
+      
     }
     if(value.at(0) != '\0'){
       reply->set_res(value);
@@ -301,11 +330,25 @@ class SupernodeServiceImpl final : public Supernode::Service {
     reply->set_chunk(ret);
     return Status::OK;
   }
+
+  void InitCacheLock(){
+    gpr_mu_init(&cache_lock);
+  }
+
+  private:
+    struct node{
+      std::string keyword;
+      std::string value;
+    };
+    std::vector<struct node> cache;
+    gpr_mu cache_lock;
+    int cache_size=0;
 };
 
 void RunServer(std::string port) {
   std::string server_address("0.0.0.0:"+port);
   SupernodeServiceImpl service;
+  service.InitCacheLock();
 
   grpc::EnableDefaultHealthCheckService(true);
   //grpc::reflection::InitProtoReflectionServerBuilderPlugin();
@@ -485,8 +528,8 @@ int main(int argc, char** argv) {
           return -1;
       }
       message += filebuf;
-      std::cout << filebuf << std::endl;
       free(filebuf);
+
       if(message.length() > filesize/2){
         std::cout << "packet for supernode collected" << std::endl;
         int index = filesize/2;
@@ -511,6 +554,7 @@ int main(int argc, char** argv) {
           return -1;
       }
       if(ntohs(rcv_hdr->cmd) == 0x0004){
+        std::cout << "file read finished" << std::endl;
         free(filebuf);
         break;
       }else{
@@ -518,6 +562,7 @@ int main(int argc, char** argv) {
         free(filebuf);
       }
     }
+    //send rest of information to child nodes
     std::vector<ChildnodeClient>* vec=ChildNodeManager::instance();
     std::vector<ChildnodeClient>::iterator it;
     std::cout << "string for child node collected. send it to childs" << std::endl;
@@ -528,6 +573,10 @@ int main(int argc, char** argv) {
     int index=-1;
     for(it=vec->begin(); it != vec->end(); it++){
       do{
+        if(index == message.size()){
+          index--;
+          break;
+        }
         index++;
       }while(index-start < len_per_child || isalnum(message[index]) );
       it->TranslateChunk(message.substr(start,index-start));
@@ -535,27 +584,30 @@ int main(int argc, char** argv) {
     }
 
     //send supernode result
+    std::cout << "send supernode result" << std::endl;
     std::string ret = SupernodeClient::instance()->CompleteTranslateChunk();
     filesize = ret.length();
     index=0;
+    snd_hdr = (struct hdr *) malloc(PACKET_SIZE);
+    filebuf = ((char *)snd_hdr)+8;
     while(filesize){
         int p_size = (filesize>(PACKET_SIZE-8))?(PACKET_SIZE-8):filesize;
+        memset(snd_hdr,0,PACKET_SIZE);
         filesize -= p_size;
-        snd_hdr = (struct hdr *) malloc(sizeof(struct hdr)+p_size);
         snd_hdr->version=0x04;
         snd_hdr->userID=0x08;
         snd_hdr->seq=0;
         snd_hdr->length=htons(p_size+8);
         snd_hdr->cmd=htons(0x0003);
-        filebuf = ((char *)snd_hdr)+8;
         strcpy(filebuf,ret.substr(index,p_size).c_str());
         if(send(newfd, (void *)snd_hdr,p_size+8,0)<0){
             perror("sending file failed\n");
         }
         index+=p_size;
-        free(snd_hdr);
     }
+    
     //send childnode results
+    std::cout << "send childnode results" << std::endl;
     ret = "";
     for(it=vec->begin(); it != vec->end(); it++){
       ret+=it->CompleteTranslateChunk();
@@ -565,22 +617,20 @@ int main(int argc, char** argv) {
     while(filesize){
         int p_size = (filesize>(PACKET_SIZE-8))?(PACKET_SIZE-8):filesize;
         filesize -= p_size;
-        snd_hdr = (struct hdr *) malloc(sizeof(struct hdr)+p_size);
+        memset(snd_hdr,0,PACKET_SIZE);
         snd_hdr->version=0x04;
         snd_hdr->userID=0x08;
         snd_hdr->seq=0;
         snd_hdr->length=htons(p_size+8);
         snd_hdr->cmd=htons(0x0003);
-        filebuf = ((char *)snd_hdr)+8;
         strcpy(filebuf,ret.substr(index,p_size).c_str());
         if(send(newfd, (void *)snd_hdr,p_size+8,0)<0){
             perror("sending file failed\n");
         }
         index+=p_size;
-        free(snd_hdr);
     }
     //send completion message
-    snd_hdr=(struct hdr *)malloc(sizeof(struct hdr));
+    memset(snd_hdr,0,sizeof(struct hdr));
     snd_hdr->version=0x04;
     snd_hdr->userID=0x08;
     snd_hdr->seq=0;
