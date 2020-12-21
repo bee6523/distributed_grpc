@@ -66,7 +66,7 @@ using assign4::Database;
 using assign4::Childnode;
 using assign4::Supernode;
 
-
+//class to manage request to other supernode
 class SupernodeClient {
  public:
   SupernodeClient(){
@@ -81,8 +81,7 @@ class SupernodeClient {
     static SupernodeClient supernode_cli;
     return &supernode_cli;
   }
-  // Assembles the client's payload, sends it and presents the response back
-  // from the server.
+  // Request other supernode to handle DB miss.
   std::string HandleMiss(const std::string& user) {
     // Data we are sending to the server.
     Request request;
@@ -108,6 +107,8 @@ class SupernodeClient {
       return "RPC failed";
     }
   }
+
+  //Pass second supernode's information to first supernode
   bool SendInfo(const std::string& ip){
       Info info;
       info.set_ip(ip);
@@ -123,6 +124,8 @@ class SupernodeClient {
         return false;
       }
   }
+
+  //Asynchronously pass half of the file to other supernode to process
   void TranslateChunk(const std::string& chunk){
     ChunkRequest request;
     request.set_chunk(chunk);
@@ -134,6 +137,8 @@ class SupernodeClient {
     call->response_reader->Finish(&call->reply, &call->status, (void*)call);
     // std::cout << "rpc send to supernode" << std::endl;
   }
+
+  //Asynchronously recieves converted result from other supernode
   std::string CompleteTranslateChunk(){
     void* got_tag;
     bool ok = false;
@@ -150,6 +155,8 @@ class SupernodeClient {
     }
   }
  private:
+  //struct to manage asynchronous request.
+  //got information from grpc tutorial(https://github.com/grpc/grpc/blob/v1.34.0/examples/cpp/helloworld/greeter_async_client2.cc)
   struct AsyncClientCall {
     // Container for the data we expect from the server.
     ChunkResponse reply;
@@ -164,6 +171,8 @@ class SupernodeClient {
   CompletionQueue* cq_;
 };
 
+
+//class to manage request to child node
 class ChildnodeClient {
  public:
   ChildnodeClient():stub_(){
@@ -174,6 +183,7 @@ class ChildnodeClient {
         cq_=new CompletionQueue();
       }
 
+  //send request of one keyword, child should lookup DB and give result
   std::string HandleMiss(const std::string& keyword){
     Request request;
     request.set_req(keyword);
@@ -188,8 +198,8 @@ class ChildnodeClient {
       return "RPC failed";
     }
   }
-  // Assembles the client's payload, sends it and presents the response back
-  // from the server.
+  
+  // Asynchronously send request of file to process. child should convert it using DB.
   void TranslateChunk(const std::string& user) {
     // Data we are sending to the server.
     ChunkRequest request;
@@ -204,6 +214,8 @@ class ChildnodeClient {
     //Status status = stub_->TranslateChunk(&context, request, &reply);
     // Act upon its status.
   }
+
+  // Asynchronously recieve child's converted output.
   std::string CompleteTranslateChunk(){
     void* got_tag;
     bool ok = false;
@@ -220,6 +232,8 @@ class ChildnodeClient {
   }
 
  private:
+  //struct to manage asynchronous request.
+  //got information from grpc tutorial(https://github.com/grpc/grpc/blob/v1.34.0/examples/cpp/helloworld/greeter_async_client2.cc)
   struct AsyncClientCall {
     // Container for the data we expect from the server.
     ChunkResponse reply;
@@ -234,6 +248,7 @@ class ChildnodeClient {
   CompletionQueue* cq_;
 };
 
+//class to manage global static instance of child nodes. managed by vector.
 class ChildNodeManager{
   public:
   ChildNodeManager(){}
@@ -246,6 +261,7 @@ class ChildNodeManager{
 // Logic and data behind the server's behavior.
 class SupernodeServiceImpl final : public Supernode::Service {
   public:
+  //get information from other node, save it to static supernode client instance.
   Status SendInfo(ServerContext* context, const Info* request,
                   Confirm* reply) override {
     std::string info = request->ip();
@@ -255,16 +271,22 @@ class SupernodeServiceImpl final : public Supernode::Service {
     reply->set_checked(true);
     return Status::OK;
   }
+
+  //broadcast keyword to it's child nodes. if request is from child node and other child node failed, 
+  //pass it to other supernode
   Status HandleMiss(ServerContext* context, const Request* request,
                   Response* reply) override{
     std::vector<ChildnodeClient>* vec=ChildNodeManager::instance();
     std::string keyword(request->req());
     std::string value;
 //    std::cout << "handle keyword " << keyword << std::endl;
+
+    //cache lookup
     gpr_mu_lock(&cache_lock);
     bool cache_hit=false;;
     for(std::vector<struct node>::iterator it = cache.begin(); it != cache.end(); it++){
       if( it->keyword == keyword){
+        //if lookup success, move the container into vector's tail to do LRU
         cache_hit = true;
         value=it->value;
         cache.erase(it);
@@ -274,6 +296,8 @@ class SupernodeServiceImpl final : public Supernode::Service {
       }
     }
     gpr_mu_unlock(&cache_lock);
+
+    //cache lookup fail. broadcast to childnodes, or conditionally supernode
     if(!cache_hit){
       for(std::vector<ChildnodeClient>::iterator it=vec->begin(); it != vec->end(); it++){
         value = it->HandleMiss(keyword);
@@ -285,8 +309,11 @@ class SupernodeServiceImpl final : public Supernode::Service {
         value = SupernodeClient::instance()->HandleMiss(keyword);
       }
       if(value.at(0) != '\0'){
+        //if found, update cache. replace if necessary.
         gpr_mu_lock(&cache_lock);
-        while((keyword.length()+value.length()+cache_size) > CACHE_SIZE){ //replacement: LRU
+
+        //replacement. algorithm is LRU - cache[0] is least recent container
+        while((keyword.length()+value.length()+cache_size) > CACHE_SIZE){ 
           std::vector<struct node>::iterator n = cache.begin();
           cache_size -= n->keyword.length() + n->value.length();
           cache.erase(n);
@@ -301,8 +328,10 @@ class SupernodeServiceImpl final : public Supernode::Service {
       return Status::OK;
     }
     return Status(StatusCode::NOT_FOUND,"other child nodes also failed to find it");
-
   }
+
+  //get half of file from other supernode. distribute it to childnodes, asynchronously retrieve result, 
+  //pass it to other supernode
   Status TranslateChunk(ServerContext* context, const ChunkRequest* request,
                   ChunkResponse* reply) override{
     std::vector<ChildnodeClient>* vec=ChildNodeManager::instance();
@@ -329,11 +358,13 @@ class SupernodeServiceImpl final : public Supernode::Service {
     return Status::OK;
   }
 
+  //Cache lock initializer
   void InitCacheLock(){
     gpr_mu_init(&cache_lock);
   }
 
   private:
+    //cache container struct.
     struct node{
       std::string keyword;
       std::string value;
@@ -343,6 +374,7 @@ class SupernodeServiceImpl final : public Supernode::Service {
     int cache_size=0;
 };
 
+//main server iteration
 void RunServer(std::string port) {
   std::string server_address("0.0.0.0:"+port);
   SupernodeServiceImpl service;
@@ -369,7 +401,7 @@ void RunServer(std::string port) {
 }
 
 
-
+//pthread worker for running server
 void* grpc_worker(void* argp){
   std::string port = *(std::string *)argp;
   RunServer(port);
@@ -429,6 +461,8 @@ int main(int argc, char** argv) {
   bool is_secondnode=false;
   std::string port;
   std::string clientport;
+  
+  //by argv, create grpc channels for childnodes, supernode
   if(argc>2){
     clientport=argv[1];
     port=argv[2];
@@ -451,6 +485,7 @@ int main(int argc, char** argv) {
     return 0;
   }
 
+  //run grpc server by pthread
   pthread_t tid;
   int rc=pthread_create(&tid,NULL,grpc_worker, (void *)&port);
   if(rc!=0){
@@ -470,6 +505,7 @@ int main(int argc, char** argv) {
   /*Extract IP Address*/
   strcpy(ip_address,inet_ntoa(((struct sockaddr_in *)&ifr.ifr_addr)->sin_addr));
 
+  //if this is second supernode, send it's information to first supernode
   std::string super_ip(ip_address);
   if(is_secondnode){
       if(!SupernodeClient::instance()->SendInfo(super_ip+":"+port)){
@@ -490,6 +526,7 @@ int main(int argc, char** argv) {
   int newfd;
 
   while(true){
+    //recieve connection
     newfd=accept(sockfd, (struct sockaddr *)&their_addr, &sin_size);
     if(newfd==-1){
         perror("accept");
@@ -637,7 +674,7 @@ int main(int argc, char** argv) {
         index+=p_size;
     }
     // std::cout << "send completion message" << std::endl;
-    //send completion message
+    //send completion message so that client can exit properly
     memset(snd_hdr,0,sizeof(struct hdr));
     snd_hdr->version=0x04;
     snd_hdr->userID=0x08;

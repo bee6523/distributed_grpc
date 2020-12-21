@@ -2,7 +2,7 @@
 
 - Student ID: 20150686
 - Your Name: Jeong Seonghoon
-- Submission date and time: 2020/12/21, 19:03 pm
+- Submission date and time: 2020/12/21, 19:40 pm
 
 ## Ethics Oath
 I pledge that I have followed all the ethical rules required by this course (e.g., not browsing the code from a disallowed source, not sharing my own code with others, so on) while carrying out this assignment, and that I will not distribute my code to anyone related to this course even after submission of this assignment. I will assume full responsibility if any violation is found later.
@@ -16,6 +16,17 @@ Briefly describe here how you implemented the project.
 At first tried to implement asynchronous single-thread server, but changed into Synchronous multi-threaded server.
 However, some grpc requests(TranslateChunk in Childnode and Supernode) are asynchronous, therefore it can send multiple grpc to child in parellel.
 caches are simply implemented using std::vector, replacement policy is LRU.
+
+for client-supernode socket connection, I used assignment1 codes.
+for supernode-childnode, there can be two grpc request:
+    TranslateChunk that are request for converting fragment of file,
+    HandleMiss for handling DB miss case.
+for supernode-supernode, same as supernode-childnode, but one more:
+    SendInfo for identifying each other
+
+I used one IDL file(assign4.proto) because it was hard to deal with CMakeLists, 
+and TAs said that it is OK to use one IDL(at piazza QNA @287, https://piazza.com/class/kehxl6d0g1c3wu?cid=287).
+Also, many types are re-used(ChunkRequest, ChunkResponse, Request, Response).
 
 build order:
 mkdir -p cmake/build

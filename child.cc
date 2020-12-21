@@ -46,6 +46,7 @@ using assign4::Supernode;
 
 #define CACHE_SIZE 10240
 
+//class to manage request to Databsse server
 class DatabaseClient {
  public:
   DatabaseClient(){}
@@ -57,8 +58,7 @@ class DatabaseClient {
     return &database_cli;
   }
 
-  // Assembles the client's payload, sends it and presents the response back
-  // from the server.
+  // Request to access DB for one keyword
   std::string AccessDb(const std::string& user) {
     // Data we are sending to the server.
     Request request;
@@ -88,6 +88,7 @@ class DatabaseClient {
   std::unique_ptr<Database::Stub> stub_;
 };
 
+//class to manage request to parent supernode
 class SupernodeClient {
  public:
   SupernodeClient(){}
@@ -98,8 +99,7 @@ class SupernodeClient {
     static SupernodeClient supernode_cli;
     return &supernode_cli;
   }
-  // Assembles the client's payload, sends it and presents the response back
-  // from the server.
+  // request to handle DB Miss. 
   std::string HandleMiss(const std::string& user) {
     // Data we are sending to the server.
     Request request;
@@ -134,16 +134,19 @@ class SupernodeClient {
 
 class ChildnodeServiceImpl final : public Childnode::Service{
  public:
+  //when HandleMiss has arrived to this childnode, lookup cache, then DB, and gives result of if value is found.
   Status HandleMiss(ServerContext* context, const Request* request,
                   Response* reply) override{
     // std::cout << "miss handler arrived" << std::endl;
     std::string keyword(request->req());
     std::string value;
 
+    //cache lookup
     gpr_mu_lock(&cache_lock);
     bool cache_hit=false;;
     for(std::vector<struct node>::iterator it = cache.begin(); it != cache.end(); it++){
       if( it->keyword == keyword){
+        //if lookup success, move the container into vector's tail to do LRU
         cache_hit = true;
         value=it->value;
         cache.erase(it);
@@ -153,11 +156,16 @@ class ChildnodeServiceImpl final : public Childnode::Service{
       }
     }
     gpr_mu_unlock(&cache_lock);
+
+    //cache lookup fail. lookup DB, and return its result.
     if(!cache_hit){
       value = DatabaseClient::instance()->AccessDb(keyword);
       if(value.at(0) != '\0'){
+        //if found, update cache. replace if necessary.
         gpr_mu_lock(&cache_lock);
-        while((keyword.length()+value.length()+cache_size) > CACHE_SIZE){ //replacement: LRU
+
+        //replacement. algorithm is LRU - cache[0] is least recent container
+        while((keyword.length()+value.length()+cache_size) > CACHE_SIZE){
           std::vector<struct node>::iterator n = cache.begin();
           cache_size -= n->keyword.length() + n->value.length();
           cache.erase(n);
@@ -169,6 +177,8 @@ class ChildnodeServiceImpl final : public Childnode::Service{
     reply->set_res(value);
     return Status::OK;
   }
+
+  //get distributed file, convert it using cache/DB/HandleMiss request.
   Status TranslateChunk(ServerContext* context, const ChunkRequest* request,
                   ChunkResponse* reply) override{
     // std::cout<<"recieved request"<<std::endl;
@@ -177,9 +187,12 @@ class ChildnodeServiceImpl final : public Childnode::Service{
 
     // std::cout<<"start processing"<<std::endl;
     while(true){
+      //identify one keyword from file
       do{
         index++;
         if(index==chunk.size()){
+          //if there is no more keyword, send converted file to parent supernode
+
           // std::cout << "translate complete: " << chunk << std::endl;
           reply->set_chunk(chunk);
           return Status::OK;
@@ -195,9 +208,11 @@ class ChildnodeServiceImpl final : public Childnode::Service{
       std::string keyword(chunk.substr(start,len));
       std::string value;
       bool cache_hit = false;
+      //cache lookup
       gpr_mu_lock(&cache_lock);
       for(std::vector<struct node>::iterator it = cache.begin(); it != cache.end(); it++){
         if( it->keyword == keyword){
+          //if lookup success, move the container into vector's tail to do LRU
           cache_hit = true;
           value=it->value;
           cache.erase(it);
@@ -208,14 +223,18 @@ class ChildnodeServiceImpl final : public Childnode::Service{
       }
       gpr_mu_unlock(&cache_lock);
       if(!cache_hit){
+        //cache lookup fail. lookup DB. if fail, request HandleMiss to parent supernode
         value = DatabaseClient::instance()->AccessDb(keyword);
         if(value.at(0)=='\0'){
           value = SupernodeClient::instance()->HandleMiss(keyword);
         }
 
         if(value.at(0) != '\0'){
+          //cache lookup fail. lookup DB, and return its result.
           gpr_mu_lock(&cache_lock);
-          while((keyword.length()+value.length()+cache_size) > CACHE_SIZE){ //replacement: LRU
+          
+          //replacement. algorithm is LRU - cache[0] is least recent container
+          while((keyword.length()+value.length()+cache_size) > CACHE_SIZE){
             std::vector<struct node>::iterator n = cache.begin();
             cache_size -= n->keyword.length() + n->value.length();
             cache.erase(n);
@@ -224,12 +243,11 @@ class ChildnodeServiceImpl final : public Childnode::Service{
           gpr_mu_unlock(&cache_lock);
         }
       }
+      //replace the keyword into corresponding value
       chunk.replace(start,len,value);
       index += value.length() - len -1;
 
-      // And we are done! Let the gRPC runtime know we've finished, using the
-      // memory address of this instance as the uniquely identifying tag for
-      // the event.
+      // If it was last keyword, send converted file to parent supernode
       if(index==chunk.size()){
         // std::cout << "translate complete: " << chunk << std::endl;
         reply->set_chunk(chunk);
@@ -237,10 +255,12 @@ class ChildnodeServiceImpl final : public Childnode::Service{
       }
     }
   }
+  //Cache lock initializer
   void InitCacheLock(){
     gpr_mu_init(&cache_lock);
   }
   private:
+    //Cache container struct.
     struct node{
       std::string keyword;
       std::string value;

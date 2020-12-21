@@ -147,6 +147,8 @@ int main(int argc, char * const argv[]){
     }
     free(snd_hdr);
 
+
+    //recieve converted file and save them.
     FILE *tf;
     if((tf=fopen("result.txt","w+"))==NULL){
         fprintf(stderr,"creating result file failed\n");
