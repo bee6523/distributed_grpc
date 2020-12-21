@@ -136,7 +136,7 @@ class ChildnodeServiceImpl final : public Childnode::Service{
  public:
   Status HandleMiss(ServerContext* context, const Request* request,
                   Response* reply) override{
-    std::cout << "miss handler arrived" << std::endl;
+    // std::cout << "miss handler arrived" << std::endl;
     std::string keyword(request->req());
     std::string value;
 
@@ -171,16 +171,16 @@ class ChildnodeServiceImpl final : public Childnode::Service{
   }
   Status TranslateChunk(ServerContext* context, const ChunkRequest* request,
                   ChunkResponse* reply) override{
-    std::cout<<"recieved request"<<std::endl;
+    // std::cout<<"recieved request"<<std::endl;
     std::string chunk(request->chunk());
     int index = -1;
 
-    std::cout<<"start processing"<<std::endl;
+    // std::cout<<"start processing"<<std::endl;
     while(true){
       do{
         index++;
         if(index==chunk.size()){
-          std::cout << "translate complete: " << chunk << std::endl;
+          // std::cout << "translate complete: " << chunk << std::endl;
           reply->set_chunk(chunk);
           return Status::OK;
         }
@@ -231,7 +231,7 @@ class ChildnodeServiceImpl final : public Childnode::Service{
       // memory address of this instance as the uniquely identifying tag for
       // the event.
       if(index==chunk.size()){
-        std::cout << "translate complete: " << chunk << std::endl;
+        // std::cout << "translate complete: " << chunk << std::endl;
         reply->set_chunk(chunk);
         return Status::OK;
       }

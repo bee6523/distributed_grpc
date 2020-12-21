@@ -2,7 +2,7 @@
 
 - Student ID: 20150686
 - Your Name: Jeong Seonghoon
-- Submission date and time: 2020/12/21, 17:00 pm
+- Submission date and time: 2020/12/21, 19:03 pm
 
 ## Ethics Oath
 I pledge that I have followed all the ethical rules required by this course (e.g., not browsing the code from a disallowed source, not sharing my own code with others, so on) while carrying out this assignment, and that I will not distribute my code to anyone related to this course even after submission of this assignment. I will assume full responsibility if any violation is found later.

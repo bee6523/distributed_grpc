@@ -132,12 +132,12 @@ class SupernodeClient {
     // the server and/or tweak certain RPC behaviors.
     call->response_reader = stub_->AsyncTranslateChunk(&call->context, request, cq_);
     call->response_reader->Finish(&call->reply, &call->status, (void*)call);
-    std::cout << "rpc send to supernode" << std::endl;
+    // std::cout << "rpc send to supernode" << std::endl;
   }
   std::string CompleteTranslateChunk(){
     void* got_tag;
     bool ok = false;
-    std::cout << "rpc recieved from supernode" << std::endl;
+    // std::cout << "rpc recieved from supernode" << std::endl;
     GPR_ASSERT(cq_->Next(&got_tag, &ok));
     AsyncClientCall* call = static_cast<AsyncClientCall*>(got_tag);
     GPR_ASSERT(ok);
@@ -249,7 +249,7 @@ class SupernodeServiceImpl final : public Supernode::Service {
   Status SendInfo(ServerContext* context, const Info* request,
                   Confirm* reply) override {
     std::string info = request->ip();
-    std::cout << "recieved from supernode " << std::endl;
+    // std::cout << "recieved from supernode " << std::endl;
     *SupernodeClient::instance() = SupernodeClient(grpc::CreateChannel(
                info, grpc::InsecureChannelCredentials()));
     reply->set_checked(true);
@@ -307,7 +307,7 @@ class SupernodeServiceImpl final : public Supernode::Service {
                   ChunkResponse* reply) override{
     std::vector<ChildnodeClient>* vec=ChildNodeManager::instance();
     std::vector<ChildnodeClient>::iterator it;
-    std::cout << "recieved rpc" << std::endl;
+    // std::cout << "recieved rpc" << std::endl;
     int num_child = vec->size();
     std::string message = request->chunk();
     int msglen = message.length();
@@ -434,7 +434,7 @@ int main(int argc, char** argv) {
     port=argv[2];
     for(int i=3; i<argc;i++){
       if(strcmp(argv[i],"-s")==0){
-        std::cout << "this is second supernode" << std::endl;
+        // std::cout << "this is second supernode" << std::endl;
         i++;
         is_secondnode=true;
         *SupernodeClient::instance() = SupernodeClient(grpc::CreateChannel(
@@ -495,7 +495,7 @@ int main(int argc, char** argv) {
         perror("accept");
         exit(1);
     }
-    std::cout << "client connected" << std::endl;
+    // std::cout << "client connected" << std::endl;
     char *filebuf;
     struct hdr *rcv_hdr=(struct hdr *)malloc(sizeof(struct hdr));
     struct hdr *snd_hdr;
@@ -513,7 +513,7 @@ int main(int argc, char** argv) {
         return -1;
     }
     filesize = atoi(filebuf);
-    std::cout << "filesize: " << filebuf << std::endl;
+    // std::cout << "filesize: " << filebuf << std::endl;
     free(filebuf);
 
     //retrieve half of information that should be passed into other supernode
@@ -530,7 +530,7 @@ int main(int argc, char** argv) {
       free(filebuf);
 
       if(message.length() > filesize/2){
-        std::cout << "packet for supernode collected" << std::endl;
+        // std::cout << "packet for supernode collected" << std::endl;
         int index = filesize/2;
         while(isalnum(message[index])){
           index--;
@@ -543,7 +543,7 @@ int main(int argc, char** argv) {
         break;
       }
     }
-    std::cout << "message left:" << message << std::endl;
+    // std::cout << "message left:" << message << std::endl;
 
     //get the rest of informations
     while((numbytes=recv(newfd,rcv_hdr,8,0))!=0){
@@ -556,7 +556,7 @@ int main(int argc, char** argv) {
           return -1;
       }
       if(ntohs(rcv_hdr->cmd) == 0x0004){
-        std::cout << "file read finished" << std::endl;
+        // std::cout << "file read finished" << std::endl;
         free(filebuf);
         break;
       }else{
@@ -568,7 +568,7 @@ int main(int argc, char** argv) {
     //send rest of information to child nodes
     std::vector<ChildnodeClient>* vec=ChildNodeManager::instance();
     std::vector<ChildnodeClient>::iterator it;
-    std::cout << "string for child node collected. send it to childs" << std::endl;
+    // std::cout << "string for child node collected. send it to childs" << std::endl;
     int num_child = vec->size();
     int msglen = message.length();
     int len_per_child = msglen/num_child+1;
@@ -586,7 +586,7 @@ int main(int argc, char** argv) {
     }
     message = "";
     //send supernode result
-    std::cout << "send supernode result" << std::endl;
+    // std::cout << "send supernode result" << std::endl;
     std::string ret = SupernodeClient::instance()->CompleteTranslateChunk();
     filesize = ret.length();
     index=0;
@@ -611,7 +611,7 @@ int main(int argc, char** argv) {
     }
     
     //send childnode results
-    std::cout << "send childnode results" << std::endl;
+    // std::cout << "send childnode results" << std::endl;
     ret = "";
     for(it=vec->begin(); it != vec->end(); it++){
       ret+=it->CompleteTranslateChunk();
@@ -636,7 +636,7 @@ int main(int argc, char** argv) {
         }
         index+=p_size;
     }
-    std::cout << "send completion message" << std::endl;
+    // std::cout << "send completion message" << std::endl;
     //send completion message
     memset(snd_hdr,0,sizeof(struct hdr));
     snd_hdr->version=0x04;
