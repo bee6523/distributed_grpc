@@ -144,7 +144,6 @@ class ChildnodeServiceImpl final : public Childnode::Service{
     bool cache_hit=false;;
     for(std::vector<struct node>::iterator it = cache.begin(); it != cache.end(); it++){
       if( it->keyword == keyword){
-        std::cout << "cache hit!" << std::endl;
         cache_hit = true;
         value=it->value;
         cache.erase(it);
@@ -163,7 +162,6 @@ class ChildnodeServiceImpl final : public Childnode::Service{
           cache_size -= n->keyword.length() + n->value.length();
           cache.erase(n);
         }
-        std::cout << "cache miss, add to cache!" << std::endl;
         cache.push_back({keyword,value});
         gpr_mu_unlock(&cache_lock);
       }
@@ -176,7 +174,6 @@ class ChildnodeServiceImpl final : public Childnode::Service{
     std::cout<<"recieved request"<<std::endl;
     std::string chunk(request->chunk());
     int index = -1;
-    std::cout<<"chunk: "<<chunk<<std::endl;
 
     std::cout<<"start processing"<<std::endl;
     while(true){
@@ -201,7 +198,6 @@ class ChildnodeServiceImpl final : public Childnode::Service{
       gpr_mu_lock(&cache_lock);
       for(std::vector<struct node>::iterator it = cache.begin(); it != cache.end(); it++){
         if( it->keyword == keyword){
-          std::cout << "cache hit!" << std::endl;
           cache_hit = true;
           value=it->value;
           cache.erase(it);
@@ -214,10 +210,8 @@ class ChildnodeServiceImpl final : public Childnode::Service{
       if(!cache_hit){
         value = DatabaseClient::instance()->AccessDb(keyword);
         if(value.at(0)=='\0'){
-          std::cout<<"miss happened" <<std::endl;
           value = SupernodeClient::instance()->HandleMiss(keyword);
         }
-        std::cout<<"found "<<value<< value.length() << std::endl;
 
         if(value.at(0) != '\0'){
           gpr_mu_lock(&cache_lock);
@@ -226,7 +220,6 @@ class ChildnodeServiceImpl final : public Childnode::Service{
             cache_size -= n->keyword.length() + n->value.length();
             cache.erase(n);
           }
-          std::cout << "cache miss, add to cache!" << std::endl;
           cache.push_back({keyword,value});
           gpr_mu_unlock(&cache_lock);
         }

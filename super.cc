@@ -137,7 +137,7 @@ class SupernodeClient {
   std::string CompleteTranslateChunk(){
     void* got_tag;
     bool ok = false;
-    std::cout << "rpc recieved from supernode" << cq_ << std::endl;
+    std::cout << "rpc recieved from supernode" << std::endl;
     GPR_ASSERT(cq_->Next(&got_tag, &ok));
     AsyncClientCall* call = static_cast<AsyncClientCall*>(got_tag);
     GPR_ASSERT(ok);
@@ -249,7 +249,7 @@ class SupernodeServiceImpl final : public Supernode::Service {
   Status SendInfo(ServerContext* context, const Info* request,
                   Confirm* reply) override {
     std::string info = request->ip();
-    std::cout << "recieved from supernode " << info << std::endl;
+    std::cout << "recieved from supernode " << std::endl;
     *SupernodeClient::instance() = SupernodeClient(grpc::CreateChannel(
                info, grpc::InsecureChannelCredentials()));
     reply->set_checked(true);
@@ -265,7 +265,6 @@ class SupernodeServiceImpl final : public Supernode::Service {
     bool cache_hit=false;;
     for(std::vector<struct node>::iterator it = cache.begin(); it != cache.end(); it++){
       if( it->keyword == keyword){
-        std::cout << "cache hit!" << std::endl;
         cache_hit = true;
         value=it->value;
         cache.erase(it);
@@ -292,7 +291,6 @@ class SupernodeServiceImpl final : public Supernode::Service {
           cache_size -= n->keyword.length() + n->value.length();
           cache.erase(n);
         }
-        std::cout << "cache miss, add to cache!" << std::endl;
         cache.push_back({keyword,value});
         gpr_mu_unlock(&cache_lock);
       }
@@ -435,9 +433,8 @@ int main(int argc, char** argv) {
     clientport=argv[1];
     port=argv[2];
     for(int i=3; i<argc;i++){
-      std::cout << argv[i] << std::endl;
       if(strcmp(argv[i],"-s")==0){
-        std::cout << "thisissecondnode" << std::endl;
+        std::cout << "this is second supernode" << std::endl;
         i++;
         is_secondnode=true;
         *SupernodeClient::instance() = SupernodeClient(grpc::CreateChannel(
@@ -523,7 +520,8 @@ int main(int argc, char** argv) {
     while((numbytes=recv(newfd,rcv_hdr,8,0))!=0){
       if(numbytes==-1)
           perror("recv error");
-      filebuf = (char *)malloc(ntohs(rcv_hdr->length)-8);
+      filebuf = (char *)malloc(ntohs(rcv_hdr->length)-7);
+      memset(filebuf,0,ntohs(rcv_hdr->length)-7);
       if(recv(newfd,filebuf,ntohs(rcv_hdr->length)-8,0)<0){
           fprintf(stderr, "recieving content failed\n");
           return -1;
@@ -551,7 +549,8 @@ int main(int argc, char** argv) {
     while((numbytes=recv(newfd,rcv_hdr,8,0))!=0){
       if(numbytes==-1)
           perror("recv error");
-      filebuf = (char *)malloc(ntohs(rcv_hdr->length)-8);
+      filebuf = (char *)malloc(ntohs(rcv_hdr->length)-7);
+      memset(filebuf,0,ntohs(rcv_hdr->length)-7);
       if(recv(newfd,filebuf,ntohs(rcv_hdr->length)-8,0)<0){
           fprintf(stderr, "recieving content failed\n");
           return -1;
@@ -577,12 +576,11 @@ int main(int argc, char** argv) {
     int index=-1;
     for(it=vec->begin(); it != vec->end(); it++){
       do{
-        if(index == message.size()){
-          index--;
-          break;
-        }
         index++;
       }while(index-start < len_per_child || isalnum(message[index]) );
+      if(index > msglen){
+        index=msglen;
+      }
       it->TranslateChunk(message.substr(start,index-start));
       start=index;
     }
