@@ -36,12 +36,12 @@ int main(int argc, char * const argv[]){
     srand(0);
     
     if(argc != 4){
-        fprintf(stderr, "usage: ./client <ip_addr> <port> <filename>\n");
+        fprintf(stderr, "usage: ./client <filename> <ip_addr> <port>\n");
         exit(-1);
     }
-    host = argv[1];
-    port = argv[2];
-    filename = argv[3];
+    filename = argv[1];
+    host = argv[2];
+    port = argv[3];
     if((snd_file = fopen(filename,"r")) == NULL){
         fprintf(stderr, "file open failed\n");
         exit(-1);

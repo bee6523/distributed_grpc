@@ -199,7 +199,6 @@ class ChildnodeClient {
     // the server and/or tweak certain RPC behaviors.
     call->response_reader = stub_->AsyncTranslateChunk(&call->context, request, cq_);
     call->response_reader->Finish(&call->reply, &call->status, (void*)call);
-    std::cout << "rpc send to child node" << std::endl;
     // The actual RPC.
     //Status status = stub_->TranslateChunk(&context, request, &reply);
     // Act upon its status.
@@ -207,7 +206,6 @@ class ChildnodeClient {
   std::string CompleteTranslateChunk(){
     void* got_tag;
     bool ok = false;
-    std::cout << "rpc recieved from child node" << cq_ << std::endl;
     GPR_ASSERT(cq_->Next(&got_tag, &ok));
     AsyncClientCall* call = static_cast<AsyncClientCall*>(got_tag);
     GPR_ASSERT(ok);
@@ -250,6 +248,8 @@ class SupernodeServiceImpl final : public Supernode::Service {
                   Confirm* reply) override {
     std::string info = request->ip();
     std::cout << "recieved from supernode " << info << std::endl;
+    *SupernodeClient::instance() = SupernodeClient(grpc::CreateChannel(
+               info, grpc::InsecureChannelCredentials()));
     reply->set_checked(true);
     return Status::OK;
   }
@@ -311,7 +311,7 @@ void RunServer(std::string port) {
   //grpc::reflection::InitProtoReflectionServerBuilderPlugin();
   ServerBuilder builder;
   ResourceQuota quota;
-  quota.SetMaxThreads(8);    //set maximum number of threads grpc server use
+  quota.SetMaxThreads(16);    //set maximum number of threads grpc server use
   // Listen on the given address without any authentication mechanism.
   builder.AddListeningPort(server_address, grpc::InsecureServerCredentials());
   builder.SetResourceQuota(quota);
@@ -510,10 +510,12 @@ int main(int argc, char** argv) {
           fprintf(stderr, "recieving content failed\n");
           return -1;
       }
-      message += filebuf;
-      free(filebuf);
       if(ntohs(rcv_hdr->cmd) == 0x0004){
+        free(filebuf);
         break;
+      }else{
+        message += filebuf;
+        free(filebuf);
       }
     }
     std::vector<ChildnodeClient>* vec=ChildNodeManager::instance();
