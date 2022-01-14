@@ -15,8 +15,10 @@
 
 from concurrent import futures
 import logging
+import sys
 
 import grpc
+import redis
 
 import assign4_pb2
 import assign4_pb2_grpc
@@ -25,13 +27,16 @@ import assign4_pb2_grpc
 dic = {'0':'I', '1':'like', '2': 'EE324'}
 
 class Database(assign4_pb2_grpc.DatabaseServicer):
+    def __init__(self):
+        self.redis = redis.Redis()
 
     def AccessDB(self, request, context):
         print ("req: " + request.req)
-        try:
-            response = dic[request.req]
+        response = self.redis.get(request.req)
+        if response is not None:
+            response = response.decode('utf-8')
             print ("res: " + response)
-        except KeyError:
+        else:
             print("KeyError")
             response = '\0'
 
@@ -40,7 +45,7 @@ class Database(assign4_pb2_grpc.DatabaseServicer):
 def serve():
     server = grpc.server(futures.ThreadPoolExecutor(max_workers=10))
     assign4_pb2_grpc.add_DatabaseServicer_to_server(Database(), server)
-    server.add_insecure_port('[::]:96523')
+    server.add_insecure_port('[::]:6523')
     server.start()
     server.wait_for_termination()
 
