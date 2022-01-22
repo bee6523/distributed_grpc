@@ -14,11 +14,13 @@ for supernode-supernode, same as supernode-childnode, but one more:
     SendInfo for identifying each other
 
 ## build order:
+```
 mkdir -p cmake/build
 pushd ./cmake/build
 cmake ../..
 make -j
 popd
+```
 
 stub files(assign4.grpc.pb.cc, assign4.grpc.pb.h, etc.) should be generated in cmake/build directory to properly included in source files.
 binary files are also created in cmake/build directory(probably not necessary).
